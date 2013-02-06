@@ -99,7 +99,7 @@ manage_rotate(Host, IoDevice, Filename, Logdir, RotateO, PacketC,
     case lists:any(fun(E) -> E end, [Rotate1, Rotate2, Rotate3]) of
 	true -> 
 	    {IoDevice2, Filename2, Gregorian_day2} =
-		rotate_log(IoDevice, Logdir, Host, Timezone),
+		rotate_log(IoDevice, Filename, Logdir, Host, Timezone),
 	    {IoDevice2, Filename2, Gregorian_day2, 0};
 	false -> 
 	    {IoDevice, Filename, Gregorian_day_log, PacketC+1}
@@ -159,7 +159,7 @@ loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
 	    loop(Host, IoDevice3, Filename3, Logdir, CheckRKP, RotateO,
 		 PacketC3, Gregorian_day3, Timezone, ShowIP, FilterO);
 	stop ->
-	    close_file(IoDevice),
+	    close_file(IoDevice, Filename),
 	    ok;
 	_ ->
 	    loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
@@ -210,7 +210,7 @@ open_file(Logdir, Host, Timezone) ->
     Sec = string:substr(TimeStamp, 16, 2),
     S = "-",
     Logname = lists:flatten([Host,S,Year,S,Month,S,Day,S,Hour,S,Min,S,Sec,
-			     ".xml"]),
+			     ".xml.tmp"]),
     Filename = filename:join([Logdir, Logname]),
 
     Gregorian_day = get_gregorian_day(),
@@ -228,13 +228,18 @@ open_file(Logdir, Host, Timezone) ->
     end,
     {IoDevice, Filename, Gregorian_day}.
 
-close_file(IoDevice) ->
+close_file(IoDevice, Filename) ->
     io:fwrite(IoDevice, "~s~n", ["</log>"]),
-    file:close(IoDevice).
+    file:close(IoDevice),
+    rename_file(Filename).
 
-rotate_log(IoDevice, Logdir, Host, Timezone) ->
-    close_file(IoDevice),
+rotate_log(IoDevice, Filename, Logdir, Host, Timezone) ->
+    close_file(IoDevice, Filename),
     open_file(Logdir, Host, Timezone).
+
+rename_file(Filename) ->
+    Filename2 = filename:rootname(Filename, ".tmp"),
+    file:rename(Filename, Filename2).
 
 make_dir_rec(Dir) ->
     case file:read_file_info(Dir) of
