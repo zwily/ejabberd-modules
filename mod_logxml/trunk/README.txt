@@ -59,6 +59,12 @@ rotate_kpackets:
 check_rotate_kpackets: 
     Check rotation every *1000 packets
     Default value: 1
+rotate_seconds:
+    Rotate every X seconds, if there's been a packet logged.
+    This option will disable all other rotation options, and is useful
+    if you need to guarantee that a message will only live in an
+    actively written log file for a maximum duration.
+    Default value: no
 
 
 

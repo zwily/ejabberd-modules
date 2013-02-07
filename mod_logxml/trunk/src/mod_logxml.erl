@@ -11,7 +11,7 @@
 
 -behaviour(gen_mod).
 
--export([start/2, init/7, stop/1,
+-export([start/2, init/8, stop/1,
 	 send_packet/3, receive_packet/4]).
 
 -include("ejabberd.hrl").
@@ -36,7 +36,11 @@ start(Host, Opts) ->
 	     Rp1 -> Rp1*1000
 	 end,
     RotateO = {Rd, Rf, Rp},
-    CheckRKP = gen_mod:get_opt(check_rotate_kpackets, Opts, 1),
+    RotateSecs = gen_mod:get_opt(rotate_seconds, Opts, no),
+    CheckRKP = case RotateSecs of
+                   no -> gen_mod:get_opt(check_rotate_kpackets, Opts, 1);
+                   _ -> no
+               end,
 
     Timezone = gen_mod:get_opt(timezone, Opts, local),
 
@@ -52,7 +56,7 @@ start(Host, Opts) ->
     ejabberd_hooks:add(user_send_packet, Host, ?MODULE, send_packet, 90),
     ejabberd_hooks:add(user_receive_packet, Host, ?MODULE, receive_packet, 90),
     register(gen_mod:get_module_proc(Host, ?PROCNAME),
-	     spawn(?MODULE, init, [Host, Logdir, RotateO, CheckRKP,
+	     spawn(?MODULE, init, [Host, Logdir, RotateO, CheckRKP, RotateSecs,
 				   Timezone, ShowIP, FilterO])).
 
 stop(Host) ->
@@ -62,10 +66,21 @@ stop(Host) ->
     Proc ! stop,
     {wait, Proc}.
 
-init(Host, Logdir, RotateO, CheckRKP, Timezone, ShowIP, FilterO) ->
+init(Host, Logdir, RotateO, CheckRKP, RotateSecs, Timezone, ShowIP, FilterO) ->
     {IoDevice, Filename, Gregorian_day} = open_file(Logdir, Host, Timezone),
+    RotateT = start_timer(Host, RotateSecs),
     loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, 0, Gregorian_day,
-	 Timezone, ShowIP, FilterO).
+	 Timezone, ShowIP, FilterO, RotateT).
+
+start_timer(_, no) -> no;
+start_timer(Host, Seconds) ->
+    Ms = Seconds * 1000,
+    Proc = gen_mod:get_module_proc(Host, ?PROCNAME),
+    {_, Timer} = timer:send_interval(Ms, Proc, rotate),
+    Timer.
+
+stop_timer(no) -> ok;
+stop_timer(Timer) -> timer:cancel(Timer).
 
 %% -------------------
 %% Main
@@ -134,7 +149,7 @@ filter(FilterO, E) ->
      {Orientation, Stanza, Direction}}. 
 
 loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
-     Gregorian_day, Timezone, ShowIP, FilterO) ->
+     Gregorian_day, Timezone, ShowIP, FilterO, RotateT) ->
     receive
 	{addlog, E} ->
 	    {IoDevice3, Filename3, Gregorian_day3, PacketC3} =
@@ -157,13 +172,25 @@ loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
 			{IoDevice, Filename, Gregorian_day, PacketC}
 		end,
 	    loop(Host, IoDevice3, Filename3, Logdir, CheckRKP, RotateO,
-		 PacketC3, Gregorian_day3, Timezone, ShowIP, FilterO);
+		 PacketC3, Gregorian_day3, Timezone, ShowIP, FilterO, RotateT);
 	stop ->
 	    close_file(IoDevice, Filename),
+            stop_timer(RotateT),
 	    ok;
+        rotate ->
+            case PacketC of
+                0 ->
+                    loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO,
+                        PacketC, Gregorian_day, Timezone, ShowIP, FilterO, RotateT);
+                _ ->
+                    {IoDevice2, Filename2, Gregorian_day2} =
+                        rotate_log(IoDevice, Filename, Logdir, Host, Timezone),
+                    loop(Host, IoDevice2, Filename2, Logdir, CheckRKP, RotateO, 0,
+                         Gregorian_day2, Timezone, ShowIP, FilterO, RotateT)
+             end;
 	_ ->
 	    loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
-		 Gregorian_day, Timezone, ShowIP, FilterO)
+		 Gregorian_day, Timezone, ShowIP, FilterO, RotateT)
     end.
 
 send_packet(FromJID, ToJID, P) ->
