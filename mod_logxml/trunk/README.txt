@@ -65,6 +65,11 @@ rotate_seconds:
     if you need to guarantee that a message will only live in an
     actively written log file for a maximum duration.
     Default value: no
+use_tmpfile:
+    If set, the log file currently being written to will have .tmp at
+    the end of the name. Once the file is rotated, the .tmp will be
+    removed.
+    Default value: false
 
 
 

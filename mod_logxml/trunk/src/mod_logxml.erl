@@ -11,7 +11,7 @@
 
 -behaviour(gen_mod).
 
--export([start/2, init/8, stop/1,
+-export([start/2, init/9, stop/1,
 	 send_packet/3, receive_packet/4]).
 
 -include("ejabberd.hrl").
@@ -42,6 +42,8 @@ start(Host, Opts) ->
                    _ -> no
                end,
 
+    UseTmp = gen_mod:get_opt(use_tmpfile, Opts, false),
+
     Timezone = gen_mod:get_opt(timezone, Opts, local),
 
     Orientation = gen_mod:get_opt(orientation, Opts, [send, recv]),
@@ -57,7 +59,7 @@ start(Host, Opts) ->
     ejabberd_hooks:add(user_receive_packet, Host, ?MODULE, receive_packet, 90),
     register(gen_mod:get_module_proc(Host, ?PROCNAME),
 	     spawn(?MODULE, init, [Host, Logdir, RotateO, CheckRKP, RotateSecs,
-				   Timezone, ShowIP, FilterO])).
+				   Timezone, ShowIP, FilterO, UseTmp])).
 
 stop(Host) ->
     ejabberd_hooks:delete(user_send_packet, Host, ?MODULE, send_packet, 90),
@@ -66,11 +68,11 @@ stop(Host) ->
     Proc ! stop,
     {wait, Proc}.
 
-init(Host, Logdir, RotateO, CheckRKP, RotateSecs, Timezone, ShowIP, FilterO) ->
-    {IoDevice, Filename, Gregorian_day} = open_file(Logdir, Host, Timezone),
+init(Host, Logdir, RotateO, CheckRKP, RotateSecs, Timezone, ShowIP, FilterO, UseTmp) ->
+    {IoDevice, Filename, Gregorian_day} = open_file(Logdir, Host, Timezone, UseTmp),
     RotateT = start_timer(Host, RotateSecs),
     loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, 0, Gregorian_day,
-	 Timezone, ShowIP, FilterO, RotateT).
+	 Timezone, ShowIP, FilterO, RotateT, UseTmp).
 
 start_timer(_, no) -> no;
 start_timer(Host, Seconds) ->
@@ -87,7 +89,7 @@ stop_timer(Timer) -> timer:cancel(Timer).
 %% -------------------
 
 manage_rotate(Host, IoDevice, Filename, Logdir, RotateO, PacketC,
-	      Gregorian_day_log, Timezone) ->
+	      Gregorian_day_log, Timezone, UseTmp) ->
     {RO_days, RO_size, RO_packets} = RotateO,
 
     Rotate1 = case RO_packets of
@@ -114,7 +116,7 @@ manage_rotate(Host, IoDevice, Filename, Logdir, RotateO, PacketC,
     case lists:any(fun(E) -> E end, [Rotate1, Rotate2, Rotate3]) of
 	true -> 
 	    {IoDevice2, Filename2, Gregorian_day2} =
-		rotate_log(IoDevice, Filename, Logdir, Host, Timezone),
+		rotate_log(IoDevice, Filename, Logdir, Host, Timezone, UseTmp),
 	    {IoDevice2, Filename2, Gregorian_day2, 0};
 	false -> 
 	    {IoDevice, Filename, Gregorian_day_log, PacketC+1}
@@ -149,7 +151,7 @@ filter(FilterO, E) ->
      {Orientation, Stanza, Direction}}. 
 
 loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
-     Gregorian_day, Timezone, ShowIP, FilterO, RotateT) ->
+     Gregorian_day, Timezone, ShowIP, FilterO, RotateT, UseTmp) ->
     receive
 	{addlog, E} ->
 	    {IoDevice3, Filename3, Gregorian_day3, PacketC3} =
@@ -161,7 +163,8 @@ loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
 				true ->
 				    manage_rotate(Host, IoDevice, Filename,
 						  Logdir, RotateO, PacketC,
-						  Gregorian_day, Timezone);
+						  Gregorian_day, Timezone,
+                                                  UseTmp);
 				false ->
 				    {IoDevice, Filename, Gregorian_day,
 				     PacketC+1}
@@ -172,7 +175,7 @@ loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
 			{IoDevice, Filename, Gregorian_day, PacketC}
 		end,
 	    loop(Host, IoDevice3, Filename3, Logdir, CheckRKP, RotateO,
-		 PacketC3, Gregorian_day3, Timezone, ShowIP, FilterO, RotateT);
+		 PacketC3, Gregorian_day3, Timezone, ShowIP, FilterO, RotateT, UseTmp);
 	stop ->
 	    close_file(IoDevice, Filename),
             stop_timer(RotateT),
@@ -181,16 +184,16 @@ loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
             case PacketC of
                 0 ->
                     loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO,
-                        PacketC, Gregorian_day, Timezone, ShowIP, FilterO, RotateT);
+                        PacketC, Gregorian_day, Timezone, ShowIP, FilterO, RotateT, UseTmp);
                 _ ->
                     {IoDevice2, Filename2, Gregorian_day2} =
-                        rotate_log(IoDevice, Filename, Logdir, Host, Timezone),
+                        rotate_log(IoDevice, Filename, Logdir, Host, Timezone, UseTmp),
                     loop(Host, IoDevice2, Filename2, Logdir, CheckRKP, RotateO, 0,
-                         Gregorian_day2, Timezone, ShowIP, FilterO, RotateT)
+                         Gregorian_day2, Timezone, ShowIP, FilterO, RotateT, UseTmp)
              end;
 	_ ->
 	    loop(Host, IoDevice, Filename, Logdir, CheckRKP, RotateO, PacketC,
-		 Gregorian_day, Timezone, ShowIP, FilterO, RotateT)
+		 Gregorian_day, Timezone, ShowIP, FilterO, RotateT, UseTmp)
     end.
 
 send_packet(FromJID, ToJID, P) ->
@@ -227,7 +230,7 @@ add_log(Io, Timezone, ShowIP, {Orientation, From, To, Packet}, _OSD) ->
 %% File
 %% -------------------
 
-open_file(Logdir, Host, Timezone) ->
+open_file(Logdir, Host, Timezone, UseTmp) ->
     TimeStamp = get_now_iso(Timezone),
     Year = string:substr(TimeStamp, 1, 4),
     Month = string:substr(TimeStamp, 5, 2),
@@ -236,8 +239,12 @@ open_file(Logdir, Host, Timezone) ->
     Min = string:substr(TimeStamp, 13, 2),
     Sec = string:substr(TimeStamp, 16, 2),
     S = "-",
+    Tmp = case UseTmp of
+              true -> ".tmp";
+              _ -> ""
+          end,
     Logname = lists:flatten([Host,S,Year,S,Month,S,Day,S,Hour,S,Min,S,Sec,
-			     ".xml.tmp"]),
+			     ".xml",Tmp]),
     Filename = filename:join([Logdir, Logname]),
 
     Gregorian_day = get_gregorian_day(),
@@ -260,13 +267,16 @@ close_file(IoDevice, Filename) ->
     file:close(IoDevice),
     rename_file(Filename).
 
-rotate_log(IoDevice, Filename, Logdir, Host, Timezone) ->
+rotate_log(IoDevice, Filename, Logdir, Host, Timezone, UseTmp) ->
     close_file(IoDevice, Filename),
-    open_file(Logdir, Host, Timezone).
+    open_file(Logdir, Host, Timezone, UseTmp).
 
 rename_file(Filename) ->
     Filename2 = filename:rootname(Filename, ".tmp"),
-    file:rename(Filename, Filename2).
+    if
+        Filename == Filename2 -> ok;
+        true -> file:rename(Filename, Filename2)
+    end.
 
 make_dir_rec(Dir) ->
     case file:read_file_info(Dir) of
